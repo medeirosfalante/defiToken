@@ -9,6 +9,7 @@ import "@openzeppelin/contracts/utils/math/SafeMath.sol";
 
 import "./pancake/IPancakeRouter02.sol";
 import "./pancake/IPancakeFactory.sol";
+
 contract DefiToken is ERC20, AccessControl {
     using SafeMath for uint256;
     using Address for address;
@@ -38,6 +39,7 @@ contract DefiToken is ERC20, AccessControl {
 
     IPancakeRouter02 public immutable pancakeV2Router;
     address public immutable pancakeV2Pair;
+
     bool inSwapAndLiquify;
     bool public swapAndLiquifyEnabled = true;
 
@@ -158,6 +160,7 @@ contract DefiToken is ERC20, AccessControl {
             return rTransferAmount;
         }
     }
+
     function tokenFromReflection(uint256 rAmount)
         public
         view
@@ -183,6 +186,7 @@ contract DefiToken is ERC20, AccessControl {
         _isExcluded[account] = true;
         _excluded.push(account);
     }
+
     function includeInReward(address account)
         external
         onlyRole(DEFAULT_ADMIN_ROLE)
@@ -220,6 +224,7 @@ contract DefiToken is ERC20, AccessControl {
         _reflectFee(rFee, tFee);
         emit Transfer(sender, recipient, tTransferAmount);
     }
+
     function excludeFromFee(address account)
         public
         onlyRole(DEFAULT_ADMIN_ROLE)
@@ -260,7 +265,7 @@ contract DefiToken is ERC20, AccessControl {
         emit SwapAndLiquifyEnabledUpdated(_enabled);
     }
 
-    //to recieve ETH from uniswapV2Router when swaping
+    //to recieve ETH from pancakeV2Router when swaping
     receive() external payable {}
 
     function _reflectFee(uint256 rFee, uint256 tFee) private {
@@ -349,6 +354,15 @@ contract DefiToken is ERC20, AccessControl {
         if (rSupply < _rTotal.div(_tTotal)) return (_rTotal, _tTotal);
         return (rSupply, tSupply);
     }
+
+    function _takeLiquidity(uint256 tLiquidity) private {
+        uint256 currentRate = _getRate();
+        uint256 rLiquidity = tLiquidity.mul(currentRate);
+        _rOwned[address(this)] = _rOwned[address(this)].add(rLiquidity);
+        if (_isExcluded[address(this)])
+            _tOwned[address(this)] = _tOwned[address(this)].add(tLiquidity);
+    }
+
     function calculateTaxFee(uint256 _amount) private view returns (uint256) {
         return _amount.mul(_taxFee).div(10**2);
     }
@@ -379,6 +393,7 @@ contract DefiToken is ERC20, AccessControl {
     function isExcludedFromFee(address account) public view returns (bool) {
         return _isExcludedFromFee[account];
     }
+
     function _transfer(
         address from,
         address to,
@@ -393,8 +408,95 @@ contract DefiToken is ERC20, AccessControl {
                 "Transfer amount exceeds the maxTxAmount."
             );
 
+        // is the token balance of this contract address over the min number of
+        // tokens that we need to initiate a swap + liquidity lock?
+        // also, don't get caught in a circular liquidity event.
+        // also, don't swap & liquify if sender is pancake pair.
+        uint256 contractTokenBalance = balanceOf(address(this));
+
+        if (contractTokenBalance >= _maxTxAmount) {
+            contractTokenBalance = _maxTxAmount;
+        }
+
+        bool overMinTokenBalance =
+            contractTokenBalance >= numTokensSellToAddToLiquidity;
+        if (
+            overMinTokenBalance &&
+            !inSwapAndLiquify &&
+            from != pancakeV2Pair &&
+            swapAndLiquifyEnabled
+        ) {
+            contractTokenBalance = numTokensSellToAddToLiquidity;
+            //add liquidity
+            swapAndLiquify(contractTokenBalance);
+        }
+
+        //indicates if fee should be deducted from transfer
+        bool takeFee = true;
+
+        //if any account belongs to _isExcludedFromFee account then remove the fee
+        if (_isExcludedFromFee[from] || _isExcludedFromFee[to]) {
+            takeFee = false;
+        }
+
         //transfer amount, it will take tax, burn, liquidity fee
-        _tokenTransfer(from, to, amount, false);
+        _tokenTransfer(from, to, amount, takeFee);
+    }
+
+    function swapAndLiquify(uint256 contractTokenBalance) private lockTheSwap {
+        // split the contract balance into halves
+        uint256 half = contractTokenBalance.div(2);
+        uint256 otherHalf = contractTokenBalance.sub(half);
+
+        // capture the contract's current ETH balance.
+        // this is so that we can capture exactly the amount of ETH that the
+        // swap creates, and not make the liquidity event include any ETH that
+        // has been manually sent to the contract
+        uint256 initialBalance = address(this).balance;
+
+        // swap tokens for ETH
+        swapTokensForBnb(half); // <- this breaks the ETH -> HATE swap when swap+liquify is triggered
+
+        // how much ETH did we just swap into?
+        uint256 newBalance = address(this).balance.sub(initialBalance);
+
+        // add liquidity to pancake
+        addLiquidity(otherHalf, newBalance);
+
+        emit SwapAndLiquify(half, newBalance, otherHalf);
+    }
+
+    function swapTokensForBnb(uint256 tokenAmount) private {
+        // generate the pancake pair path of token -> weth
+        address[] memory path = new address[](2);
+        path[0] = address(this);
+        path[1] = pancakeV2Router.WETH();
+
+        _approve(address(this), address(pancakeV2Router), tokenAmount);
+
+        // make the swap
+        pancakeV2Router.swapExactTokensForETHSupportingFeeOnTransferTokens(
+            tokenAmount,
+            0, // accept any amount of ETH
+            path,
+            address(this),
+            block.timestamp
+        );
+    }
+
+    function addLiquidity(uint256 tokenAmount, uint256 ethAmount) private {
+        // approve token transfer to cover all possible scenarios
+        _approve(address(this), address(pancakeV2Router), tokenAmount);
+
+        // add the liquidity
+        pancakeV2Router.addLiquidityETH{value: ethAmount}(
+            address(this),
+            tokenAmount,
+            0, // slippage is unavoidable
+            0, // slippage is unavoidable
+            _receiverLiquid,
+            block.timestamp
+        );
     }
 
     //this method is responsible for taking all fee, if takeFee is true
@@ -403,6 +505,24 @@ contract DefiToken is ERC20, AccessControl {
         address recipient,
         uint256 amount,
         bool takeFee
+    ) private {
+        if (!takeFee) removeAllFee();
+
+        if (_isExcluded[sender] && !_isExcluded[recipient]) {
+            _transferFromExcluded(sender, recipient, amount);
+        } else if (!_isExcluded[sender] && _isExcluded[recipient]) {
+            _transferToExcluded(sender, recipient, amount);
+        } else if (!_isExcluded[sender] && !_isExcluded[recipient]) {
+            _transferStandard(sender, recipient, amount);
+        } else if (_isExcluded[sender] && _isExcluded[recipient]) {
+            _transferBothExcluded(sender, recipient, amount);
+        } else {
+            _transferStandard(sender, recipient, amount);
+        }
+
+        if (!takeFee) restoreAllFee();
+    }
+
     function _transferStandard(
         address sender,
         address recipient,
