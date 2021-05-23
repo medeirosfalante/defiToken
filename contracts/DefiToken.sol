@@ -64,6 +64,17 @@ contract DefiToken is ERC20, AccessControl {
         string memory _symbol
     ) ERC20(_name, _symbol) {
         _rOwned[_msgSender()] = _rTotal;
+
+        IPancakeRouter02 _pancakeV2Router =
+            IPancakeRouter02(_pancakeRouterAddress);
+        // Create a pancake pair for this new token
+        pancakeV2Pair = IPancakeFactory(_pancakeV2Router.factory()).createPair(
+            address(this),
+            _pancakeV2Router.WETH()
+        );
+
+        // set the rest of the contract variables
+        pancakeV2Router = _pancakeV2Router;
         _receiverLiquid = _msgSender();
 
         //exclude owner and this contract from fee
