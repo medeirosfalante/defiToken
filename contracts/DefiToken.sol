@@ -7,6 +7,8 @@ import "@openzeppelin/contracts/utils/Context.sol";
 import "@openzeppelin/contracts/utils/Address.sol";
 import "@openzeppelin/contracts/utils/math/SafeMath.sol";
 
+import "./pancake/IPancakeRouter02.sol";
+import "./pancake/IPancakeFactory.sol";
 contract DefiToken is ERC20, AccessControl {
     using SafeMath for uint256;
     using Address for address;
