@@ -127,6 +127,19 @@ contract DefiToken is ERC20, AccessControl {
         return _tFeeTotal;
     }
 
+    function tokenFromReflection(uint256 rAmount)
+        public
+        view
+        returns (uint256)
+    {
+        require(
+            rAmount <= _rTotal,
+            "Amount must be less than total reflections"
+        );
+        uint256 currentRate = _getRate();
+        return rAmount.div(currentRate);
+    }
+
     function includeInReward(address account)
         external
         onlyRole(DEFAULT_ADMIN_ROLE)
