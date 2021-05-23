@@ -36,6 +36,8 @@ contract DefiToken is ERC20, AccessControl {
     uint256 public _liquidityFee = 5;
     uint256 private _previousLiquidityFee = _liquidityFee;
 
+    IPancakeRouter02 public immutable pancakeV2Router;
+    address public immutable pancakeV2Pair;
     bool inSwapAndLiquify;
     bool public swapAndLiquifyEnabled = true;
 
