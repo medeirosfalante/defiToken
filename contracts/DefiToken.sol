@@ -204,6 +204,25 @@ contract DefiToken is ERC20, AccessControl {
         _tFeeTotal = _tFeeTotal.add(tFee);
     }
 
+
+    function removeAllFee() private {
+        if (_taxFee == 0 && _liquidityFee == 0) return;
+
+        _previousTaxFee = _taxFee;
+        _previousLiquidityFee = _liquidityFee;
+
+        _taxFee = 0;
+        _liquidityFee = 0;
+    }
+
+    function restoreAllFee() private {
+        _taxFee = _previousTaxFee;
+        _liquidityFee = _previousLiquidityFee;
+    }
+
+    function isExcludedFromFee(address account) public view returns (bool) {
+        return _isExcludedFromFee[account];
+    }
     function _transfer(
         address from,
         address to,
